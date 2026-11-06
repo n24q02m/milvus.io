@@ -132,13 +132,65 @@ export const useFilter = () => {
   }, [asPath]);
 };
 
+export const normalizeCodeFilterKey = (raw?: string | null): string => {
+  if (!raw) return '';
+  const cleaned = raw
+    .trim()
+    .replace(/^[?#]+/, '')
+    .replace(/%/g, '')
+    .toLowerCase();
+  if (!cleaned) return '';
+  if (cleaned === 'c++') return '?cpp';
+  return `?${cleaned}`;
+};
+
+export const matchesLanguageClass = (
+  classList: { contains: (cls: string) => boolean },
+  searchKey: string
+): boolean => {
+  const lang = normalizeCodeFilterKey(searchKey).replace(/^\?/, '');
+  if (!lang) return false;
+  if (lang === 'cpp') {
+    return (
+      classList.contains('language-cpp') || classList.contains('language-c++')
+    );
+  }
+  return classList.contains(`language-${lang}`);
+};
+
+export const collectScopedCodeBlocks = (filterWrappers: Iterable<Element>) => {
+  const groupedSet = new Set<Element>();
+  Array.from(filterWrappers).forEach(fw => {
+    let next = fw.nextElementSibling;
+    while (next) {
+      if (next.tagName === 'P' && !(next.textContent || '').trim()) {
+        next = next.nextElementSibling;
+        continue;
+      }
+      if (next.tagName === 'PRE') {
+        const codes = next.querySelectorAll('[class*="language-"]');
+        if (codes.length) {
+          codes.forEach(c => groupedSet.add(c));
+        } else if (next.className && next.className.includes('language-')) {
+          groupedSet.add(next);
+        }
+        next = next.nextElementSibling;
+        continue;
+      }
+      break;
+    }
+  });
+  return groupedSet;
+};
+
 export const useMultipleCodeFilter = () => {
   const { asPath } = useRouter();
   const SEARCH = 'search';
   useEffect(() => {
-    const setSearch = (val: string) => window.localStorage.setItem(SEARCH, val);
+    const setSearch = (val: string) =>
+      window.localStorage.setItem(SEARCH, normalizeCodeFilterKey(val));
     const getSearch = () => {
-      return window.localStorage.getItem(SEARCH);
+      return normalizeCodeFilterKey(window.localStorage.getItem(SEARCH));
     };
 
     const filterWrappers = document.querySelectorAll('.multipleCode');
@@ -147,11 +199,11 @@ export const useMultipleCodeFilter = () => {
     filterWrappers.forEach(fw => {
       const fs = fw.querySelectorAll('a');
       fs.forEach(f => {
-        if (!firstSearch) {
-          // <a href='#node' >xxx</a>
-          firstSearch = f.hash.replace('#', '?');
+        const key = normalizeCodeFilterKey(f.getAttribute('href') || f.hash);
+        if (!firstSearch && key) {
+          firstSearch = key;
         }
-        f['key'] = f.hash.replace('#', '?');
+        f['key'] = key;
         allFilters.push(f);
       });
     });
@@ -162,31 +214,35 @@ export const useMultipleCodeFilter = () => {
       allContents.forEach(c => c.classList.toggle('active', true));
       return;
     }
-    // the language options of current code block
-    // we must make sure options are same on single page
-    const languageList = Array.prototype.map.call(
-      filterWrappers[0].children,
-      item => item.getAttribute('href')
+
+    const groupedContents = collectScopedCodeBlocks(filterWrappers);
+    allContents.forEach(c => {
+      if (!groupedContents.has(c)) {
+        c.classList.toggle('active', true);
+      }
+    });
+
+    // Normalize available language options on the current page
+    const languageList = Array.from(
+      new Set(allFilters.map(f => f['key']).filter(Boolean))
     );
     const clickEventHandler = targetSearch => {
-      const search = targetSearch;
-      setSearch(targetSearch);
+      const search = normalizeCodeFilterKey(targetSearch);
+      if (!search) return;
+      setSearch(search);
       const currentFilters = allFilters.filter(f => f.key === search);
       allFilters.forEach(f => f.classList.toggle('active', false));
       currentFilters.forEach(cf => cf.classList.toggle('active', true));
-      allContents.forEach(c => c.classList.toggle('active', false));
-      const contents = document.querySelectorAll(
-        `.language-${search.replace('?', '').replace(/%/g, '')}`
-      );
-
-      contents.forEach(c => c.classList.toggle('active', true));
+      groupedContents.forEach(c => {
+        c.classList.toggle('active', matchesLanguageClass(c.classList, search));
+      });
     };
 
     filterWrappers.forEach(w => {
       w.addEventListener('click', (e: Event) => {
         e.preventDefault();
         if (e.target instanceof HTMLAnchorElement && e.target.tagName === 'A') {
-          clickEventHandler(e.target.hash.replace('#', '?'));
+          clickEventHandler(e.target.getAttribute('href') || e.target.hash);
         }
       });
     });
